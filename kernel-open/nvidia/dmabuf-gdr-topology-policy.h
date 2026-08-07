@@ -32,7 +32,7 @@
 /*
  * Keep the non-coherent topology exception deliberately narrow. Linux must
  * approve the complete P2PDMA path and the importer must be in an identity
- * IOMMU domain. The experimental path then uses dma_map_resource() instead of
+ * IOMMU domain. The non-coherent path then uses dma_map_resource() instead of
  * the stock FORCE_PCIE IOMMU bypass.
  */
 #define DMABUF_GDR_TOPOLOGY_ALLOWED(enabled, identityIommu, p2pDistance, \
