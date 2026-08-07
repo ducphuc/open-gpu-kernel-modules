@@ -56,6 +56,7 @@
 #include "gpu/mem_mgr/mem_mgr.h"
 #include "virtualization/hypervisor/hypervisor.h"
 #include "gpu/mem_sys/kern_mem_sys.h"
+#include "dmabuf_gdr_policy.h"
 #include "gpu/nvenc/nvencsession.h"
 #include "kernel/gpu/fifo/kernel_fifo.h"
 #include "gpu/ce/kernel_ce.h"
@@ -85,6 +86,15 @@
 // bit to set when telling physical to fill in an info entry
 #define INDEX_FORWARD_TO_PHYSICAL 0x80000000
 ct_assert(INDEX_FORWARD_TO_PHYSICAL == DRF_NUM(2080, _CTRL_GPU_INFO_INDEX, _RESERVED, 1));
+
+static NvBool
+_isDmaBufP2PEnabled(OBJGPU *pGpu)
+{
+    NvU32 data = NV_REG_STR_ENABLE_DMABUF_P2P_DEFAULT;
+
+    (void)osReadRegistryDword(pGpu, NV_REG_STR_ENABLE_DMABUF_P2P, &data);
+    return data != 0;
+}
 
 
 static NV_STATUS
@@ -526,14 +536,31 @@ getGpuInfos(Subdevice *pSubdevice, NV2080_CTRL_GPU_GET_INFO_V2_PARAMS *pParams, 
             }
             case NV2080_CTRL_GPU_INFO_INDEX_DMABUF_CAPABILITY:
             {
+                KernelBus *pKernelBus = GPU_GET_KERNEL_BUS(pGpu);
+                NvBool bOsDmabuf = osDmabufIsSupported();
+                NvBool bApm = gpuIsApmFeatureEnabled(pGpu);
+                NvBool bCoherent = pGpu->getProperty(
+                    pGpu,
+                    PDB_PROP_GPU_COHERENT_CPU_MAPPING);
+                NvBool bDmaBufP2PEnabled = _isDmaBufP2PEnabled(pGpu);
+                NvBool bDmaBufP2PAllowed =
+                    DMABUF_GDR_NONCOHERENT_ALLOWED(
+                        bDmaBufP2PEnabled,
+                        bCoherent,
+                        NV_TRUE,
+                        kbusIsStaticBar1Enabled(pGpu, pKernelBus),
+                        pKernelBus->bBar1Disabled,
+                        IS_MIG_ENABLED(pGpu));
+
                 data = NV2080_CTRL_GPU_INFO_INDEX_DMABUF_CAPABILITY_NO;
 
-                if (osDmabufIsSupported() &&
-                    (!gpuIsApmFeatureEnabled(pGpu)) &&
-                    (!NVCPU_IS_PPC64LE))
+                if (bOsDmabuf &&
+                    !NVCPU_IS_PPC64LE &&
+                    (!bApm || bDmaBufP2PAllowed))
                 {
                     data = NV2080_CTRL_GPU_INFO_INDEX_DMABUF_CAPABILITY_YES;
                 }
+
                 break;
             }
             case NV2080_CTRL_GPU_INFO_INDEX_IS_RESETLESS_MIG_SUPPORTED:

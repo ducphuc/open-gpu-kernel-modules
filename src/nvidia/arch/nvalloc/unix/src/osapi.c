@@ -62,6 +62,7 @@
 #include <nv-kernel-rmapi-ops.h>
 #include <rmobjexportimport.h>
 #include "nv-reg.h"
+#include "dmabuf_gdr_policy.h"
 #include "nv-firmware-registry.h"
 #include "core/hal_mgr.h"
 #include "gpu/device/device.h"
@@ -1410,6 +1411,15 @@ static NvU32 RmDmabufMmapGetCpuCacheType(
 #endif
 }
 
+static NvBool
+_isDmaBufP2PEnabled(OBJGPU *pGpu)
+{
+    NvU32 data = NV_REG_STR_ENABLE_DMABUF_P2P_DEFAULT;
+
+    (void)osReadRegistryDword(pGpu, NV_REG_STR_ENABLE_DMABUF_P2P, &data);
+    return data != 0;
+}
+
 static NV_STATUS
 RmDmabufVerifyMemHandle(
     OBJGPU             *pGpu,
@@ -1523,13 +1533,25 @@ RmDmabufGetClientAndDevice(
     if (mappingType == NV_DMABUF_EXPORT_MAPPING_TYPE_FORCE_PCIE)
     {
         KernelBus *pKernelBus = GPU_GET_KERNEL_BUS(pGpu);
+        NvBool bCoherent = pGpu->getProperty(
+            pGpu,
+            PDB_PROP_GPU_COHERENT_CPU_MAPPING);
+        NvBool bDmaBufP2PAllowed =
+            DMABUF_GDR_NONCOHERENT_ALLOWED(
+                _isDmaBufP2PEnabled(pGpu),
+                bCoherent,
+                NV_TRUE,
+                kbusIsStaticBar1Enabled(pGpu, pKernelBus),
+                pKernelBus->bBar1Disabled,
+                IS_MIG_ENABLED(pGpu));
 
-        if (!pGpu->getProperty(pGpu, PDB_PROP_GPU_COHERENT_CPU_MAPPING) ||
+        if ((!bCoherent && !bDmaBufP2PAllowed) ||
             pKernelBus->bBar1Disabled ||
             IS_MIG_ENABLED(pGpu))
         {
             return NV_ERR_NOT_SUPPORTED;
         }
+
     }
 
     if (IS_MIG_ENABLED(pGpu))
@@ -5846,10 +5868,17 @@ NV_STATUS NV_API_CALL rm_dma_buf_map_mem_handle(
         RsClient *pClient;
         NvU64 idx;
         NvU64 barOffset;
+        NvU64 translatedStart;
         KernelBus *pKernelBus;
+        NvBool bCoherent;
         NvBool bForcePcie;
+        NvBool bApertureMapped = NV_FALSE;
+        NvBool bDmaBufP2PAllowed;
 
         pKernelBus = GPU_GET_KERNEL_BUS(pGpu);
+        bCoherent = pGpu->getProperty(
+            pGpu,
+            PDB_PROP_GPU_COHERENT_CPU_MAPPING);
 
         if (!bStaticPhysAddrs)
         {
@@ -5880,17 +5909,90 @@ NV_STATUS NV_API_CALL rm_dma_buf_map_mem_handle(
                     (BUS_MAP_FB_FLAGS_MAP_UNICAST | BUS_MAP_FB_FLAGS_ALLOW_DISCONTIG),
                     pDevice),
             Done);
+        bApertureMapped = NV_TRUE;
 
         bForcePcie = (mappingType == NV_DMABUF_EXPORT_MAPPING_TYPE_FORCE_PCIE);
+        bDmaBufP2PAllowed =
+            DMABUF_GDR_NONCOHERENT_ALLOWED(
+                _isDmaBufP2PEnabled(pGpu),
+                bCoherent,
+                bForcePcie,
+                kbusIsStaticBar1Enabled(pGpu, pKernelBus),
+                pKernelBus->bBar1Disabled,
+                IS_MIG_ENABLED(pGpu));
+
+        if (bDmaBufP2PAllowed)
+        {
+            NvU64 staticStart =
+                pKernelBus->bar1[GPU_GFID_PF].staticBar1.startOffset;
+            NvU64 staticSize =
+                pKernelBus->bar1[GPU_GFID_PF].staticBar1.size;
+
+            for (idx = 0; idx < pMemArea->numRanges; idx++)
+            {
+                MemoryRange range = pMemArea->pRanges[idx];
+
+                if (!DMABUF_GDR_RANGE_CONTAINED(range.start, range.size,
+                                                   staticStart, staticSize))
+                {
+                    NV_PRINTF(
+                        LEVEL_ERROR,
+                        "GDR-DMABUF stage=map gpu=%u range=%llu "
+                        "start=0x%llx size=0x%llx staticStart=0x%llx "
+                        "staticSize=0x%llx status=outside_static_bar1\n",
+                        gpuGetInstance(pGpu),
+                        idx,
+                        range.start,
+                        range.size,
+                        staticStart,
+                        staticSize);
+                    rmStatus = NV_ERR_NOT_SUPPORTED;
+                    goto UnmapFbAperture;
+                }
+            }
+        }
 
         NV_ASSERT_OK_OR_GOTO(rmStatus,
                              kbusGetGpuFbPhysAddressForRdma(pGpu, pKernelBus,
                                                             bForcePcie, &barOffset),
-                             Done);
+                             UnmapFbAperture);
+
+        // Validate all additions before changing any range in-place.
+        for (idx = 0; idx < pMemArea->numRanges; idx++)
+        {
+            if (!portSafeAddU64(pMemArea->pRanges[idx].start,
+                                barOffset, &translatedStart))
+            {
+                rmStatus = NV_ERR_INVALID_ADDRESS;
+                goto UnmapFbAperture;
+            }
+        }
 
         for (idx = 0; idx < pMemArea->numRanges; idx++)
         {
             pMemArea->pRanges[idx].start += barOffset;
+        }
+
+        goto Done;
+
+UnmapFbAperture:
+        if (bApertureMapped)
+        {
+            NV_STATUS unmapStatus = kbusUnmapFbAperture_HAL(
+                pGpu, pKernelBus, pMemDesc, *pMemArea,
+                BUS_MAP_FB_FLAGS_MAP_UNICAST);
+
+            if (unmapStatus != NV_OK)
+            {
+                NV_PRINTF(
+                    LEVEL_ERROR,
+                    "GDR-DMABUF stage=map_cleanup gpu=%u "
+                    "mapStatus=0x%x unmapStatus=0x%x\n",
+                    gpuGetInstance(pGpu), rmStatus, unmapStatus);
+            }
+
+            pMemArea->pRanges = NULL;
+            pMemArea->numRanges = 0;
         }
     }
 

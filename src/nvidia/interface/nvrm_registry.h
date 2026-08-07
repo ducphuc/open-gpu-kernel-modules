@@ -1130,6 +1130,11 @@
 #define NV_REG_STR_RM_PCIEP2P_TYPE_AUTO                     (0x00000002)
 #define NV_REG_STR_RM_PCIEP2P_TYPE_DEFAULT                  NV_REG_STR_RM_PCIEP2P_TYPE_MAILBOX
 
+// Public, default-on non-coherent DMA-BUF FORCE_PCIE policy switch. Coherent
+// DMA-BUF behavior is unchanged.
+#define NV_REG_STR_ENABLE_DMABUF_P2P                   "EnableDmaBufP2P"
+#define NV_REG_STR_ENABLE_DMABUF_P2P_DEFAULT           1
+
 //
 // Type: DWORD
 // Enables/Disables the WAR for bug 1630288 where we disable 3rd-party peer mappings
