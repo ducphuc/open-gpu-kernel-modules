@@ -1118,20 +1118,23 @@
 // Type: DWORD
 // Allows the choice of which PCIe P2P method to use
 //
-// TYPE_DEFAULT   mailbox P2P is to be used by default until UVM supports BAR1 P2P
+// TYPE_DEFAULT   automatic BAR1 selection is used by default
 //
 // TYPE_MAILBOX   forces mailbox P2P to be used if supported
 // TYPE_BAR1      forces BAR1 P2P to be used if supported
-// TYPE_AUTO      allows automatic selection of BAR1/mailbox depending on if BAR1P2P is supported
+// TYPE_AUTO      automatically selects BAR1 without falling back to mailbox
 //
 #define NV_REG_STR_RM_PCIEP2P_TYPE                          "RMPcieP2PType"
 #define NV_REG_STR_RM_PCIEP2P_TYPE_MAILBOX                  (0x00000000)
 #define NV_REG_STR_RM_PCIEP2P_TYPE_BAR1                     (0x00000001)
 #define NV_REG_STR_RM_PCIEP2P_TYPE_AUTO                     (0x00000002)
-#define NV_REG_STR_RM_PCIEP2P_TYPE_DEFAULT                  NV_REG_STR_RM_PCIEP2P_TYPE_MAILBOX
+#define NV_REG_STR_RM_PCIEP2P_TYPE_DEFAULT                  NV_REG_STR_RM_PCIEP2P_TYPE_AUTO
 
-// Public, default-on non-coherent DMA-BUF FORCE_PCIE policy switch. Coherent
-// DMA-BUF behavior is unchanged.
+// Public, default-on PCIe and DMA-BUF P2P policy switches. The DMA-BUF switch
+// controls the non-coherent FORCE_PCIE path; coherent DMA-BUF behavior is
+// unchanged.
+#define NV_REG_STR_ENABLE_PCIE_P2P                     "EnablePcieP2P"
+#define NV_REG_STR_ENABLE_PCIE_P2P_DEFAULT             1
 #define NV_REG_STR_ENABLE_DMABUF_P2P                   "EnableDmaBufP2P"
 #define NV_REG_STR_ENABLE_DMABUF_P2P_DEFAULT           1
 

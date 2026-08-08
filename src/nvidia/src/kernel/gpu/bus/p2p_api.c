@@ -33,6 +33,7 @@
 #include "platform/p2p/p2p_caps.h"
 #include "kernel/gpu/nvlink/kernel_nvlink.h"
 #include "nvRmReg.h"
+#include "nvrm_registry.h"
 #include "rmapi/rs_utils.h"
 #include "vgpu/rpc.h"
 #include "vgpu/vgpu_events.h"
@@ -564,6 +565,20 @@ p2papiConstruct_IMPL
 
     pP2PApi->peer1 = pLocalGpu;
     pP2PApi->peer2 = pRemoteGpu;
+
+    if ((p2pConnectionType == P2P_CONNECTIVITY_PCIE_PROPRIETARY) ||
+        (p2pConnectionType == P2P_CONNECTIVITY_PCIE_BAR1))
+    {
+        NvU32 pcieP2PEnabled = NV_REG_STR_ENABLE_PCIE_P2P_DEFAULT;
+
+        (void)osReadRegistryDword(
+            pLocalGpu, NV_REG_STR_ENABLE_PCIE_P2P, &pcieP2PEnabled);
+        if (pcieP2PEnabled == 0)
+        {
+            return NV_ERR_NOT_SUPPORTED;
+        }
+    }
+
     pP2PApi->attributes  = DRF_NUM(_P2PAPI, _ATTRIBUTES, _CONNECTION_TYPE, p2pConnectionType);
     pP2PApi->attributes |= bSpaAccessOnly ? DRF_DEF(_P2PAPI, _ATTRIBUTES, _LINK_TYPE, _SPA) :
                                             DRF_DEF(_P2PAPI, _ATTRIBUTES, _LINK_TYPE, _GPA);

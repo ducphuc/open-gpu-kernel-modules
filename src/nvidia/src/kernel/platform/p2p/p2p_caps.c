@@ -33,11 +33,63 @@
 #include "vgpu/vgpu_events.h"
 #include "platform/chipset/chipset.h"
 #include "platform/p2p/p2p_caps.h"
+#include "pcie_p2p_policy.h"
 #include "nvrm_registry.h"
 #include "nvlimits.h"
 #include "nvdevid.h"
 
 ct_assert(NV2080_GET_P2P_CAPS_UUID_LEN == NV_GPU_UUID_LEN);
+ct_assert(PCIE_P2P_POLICY_ENABLE_PCIE_DEFAULT == NV_REG_STR_ENABLE_PCIE_P2P_DEFAULT);
+ct_assert(PCIE_P2P_POLICY_ENABLE_DMABUF_DEFAULT == NV_REG_STR_ENABLE_DMABUF_P2P_DEFAULT);
+ct_assert(PCIE_P2P_POLICY_STATUS_OK == NV0000_P2P_CAPS_STATUS_OK);
+ct_assert(PCIE_P2P_POLICY_STATUS_CHIPSET_NOT_SUPPORTED == NV0000_P2P_CAPS_STATUS_CHIPSET_NOT_SUPPORTED);
+ct_assert(PCIE_P2P_POLICY_STATUS_GPU_NOT_SUPPORTED == NV0000_P2P_CAPS_STATUS_GPU_NOT_SUPPORTED);
+ct_assert(PCIE_P2P_POLICY_STATUS_IOH_TOPOLOGY_NOT_SUPPORTED == NV0000_P2P_CAPS_STATUS_IOH_TOPOLOGY_NOT_SUPPORTED);
+ct_assert(PCIE_P2P_POLICY_STATUS_DISABLED == NV0000_P2P_CAPS_STATUS_DISABLED_BY_REGKEY);
+ct_assert(PCIE_P2P_POLICY_STATUS_NOT_SUPPORTED == NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED);
+
+static NvBool
+_kp2pCapsIsPcieP2PEnabled(OBJGPU *pGpu)
+{
+    NvU32 data = NV_REG_STR_ENABLE_PCIE_P2P_DEFAULT;
+
+    (void)osReadRegistryDword(pGpu, NV_REG_STR_ENABLE_PCIE_P2P, &data);
+    return data != 0;
+}
+
+static void
+_kp2pCapsLogPolicyOnce
+(
+    NvU32            gpuMask,
+    OBJGPU          *pGpu,
+    NvBool           bPcieP2PEnabled,
+    NvBool           bBar1Eligible,
+    NvU8             rawMailboxWriteCapStatus,
+    NvU8             rawMailboxReadCapStatus,
+    NvU8             effectiveWriteCapStatus,
+    NvU8             effectiveReadCapStatus,
+    P2P_CONNECTIVITY connectivity
+)
+{
+    static volatile NvU32 bLogged = 0;
+    NvU32 dmabufP2PEnabled = NV_REG_STR_ENABLE_DMABUF_P2P_DEFAULT;
+
+    if (gpumgrGetSubDeviceCount(gpuMask) < 2)
+        return;
+
+    if (!portAtomicCompareAndSwapU32(&bLogged, 1, 0))
+        return;
+
+    (void)osReadRegistryDword(
+        pGpu, NV_REG_STR_ENABLE_DMABUF_P2P, &dmabufP2PEnabled);
+    portDbgPrintf(
+        "NVRM: PCIe P2P policy: EnablePcieP2P=%u EnableDmaBufP2P=%u "
+        "rawMailboxWrite=%u rawMailboxRead=%u bar1Eligible=%u "
+        "effectiveWrite=%u effectiveRead=%u transport=%u\n",
+        bPcieP2PEnabled, dmabufP2PEnabled != 0,
+        rawMailboxWriteCapStatus, rawMailboxReadCapStatus, bBar1Eligible,
+        effectiveWriteCapStatus, effectiveReadCapStatus, connectivity);
+}
 
 /**
  * @brief Determines if the GPUs are P2P compatible
@@ -379,88 +431,64 @@ _kp2pCapsCheckStatusOverridesForPcie
 }
 
 /**
- * @brief Check GPU Pcie mailbox P2P capability
+ * @brief Discover PCIe host topology independently of the selected transport
  *
- * @param[in]  pGpu                         OBJGPU pointer
+ * @param[in]  gpuMask                      GPU pair mask
  * @param[out] pP2PWriteCapStatus           Pointer to get the P2P write capability
  * @param[out] pP2PReadCapStatus            Pointer to get the P2P read capability
  * @param[out] pbCommonPciSwitch            To return if GPUs are on a common PCIE switch
+ * @param[out] pbHypervisorOverride          Whether hypervisor policy accepted the pair
  *
- * @returns NV_OK, if successfully
- *          The write and read capability status are in the pP2PWriteCapStatus and pP2PReadCapStatus
+ * @returns NV_OK with topology-specific capability statuses
  */
 static NV_STATUS
-_kp2pCapsGetStatusOverPcie
+_kp2pCapsGetTopologyStatusOverPcie
 (
     NvU32   gpuMask,
     NvU8   *pP2PWriteCapStatus,
     NvU8   *pP2PReadCapStatus,
-    NvBool *pbCommonPciSwitch
+    NvBool *pbCommonPciSwitch,
+    NvBool *pbHypervisorOverride
 )
 {
-    OBJGPU *pGpu      = NULL;
-    OBJGPU *pFirstGpu = NULL;
-    NvU32 gpuInstance = 0;
-    KernelBif *pKernelBif  = NULL;
     OBJSYS *pSys = SYS_GET_INSTANCE();
     OBJCL *pCl = SYS_GET_CL(pSys);
-    NvU32 iohDomain_ref = 0xFFFFFFFF;
-    NvU8 iohBus_ref = 0xFF;
-    NvU8 pciSwitchBus = 0, pciSwitchBus_ref = 0xFF;
-    NvBool bCommonPciSwitchFound = NV_TRUE;
-    NvU16 deviceID;
-    NvU8 gpuP2PReadCapsStatus = NV0000_P2P_CAPS_STATUS_OK;
-    NvU8 gpuP2PWriteCapsStatus = NV0000_P2P_CAPS_STATUS_OK;
-    NvU32 lockedGpuMask = 0;
-    NV_STATUS status = NV_OK;
     OBJHYPERVISOR *pHypervisor = SYS_GET_HYPERVISOR(pSys);
-    NvU8 unused; // atomics are never supported for mailbox PCIe.
+    OBJGPU *pGpu = NULL;
+    OBJGPU *pFirstGpu = NULL;
+    NvU32 gpuInstance = 0;
+    NvU32 iohDomainRef = 0xFFFFFFFF;
+    NvU8 iohBusRef = 0xFF;
+    NvU8 pciSwitchBus = 0;
+    NvU8 pciSwitchBusRef = 0xFF;
+    NvBool bCommonPciSwitchFound = NV_TRUE;
 
-    // Check if any overrides are enabled.
-    if (_kp2pCapsCheckStatusOverridesForPcie(gpuMask, pP2PWriteCapStatus,
-                                            pP2PReadCapStatus, &unused))
-    {
-        return NV_OK;
-    }
+    *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_OK;
+    *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_OK;
+    *pbHypervisorOverride = NV_FALSE;
 
-    pGpu = gpumgrGetNextGpu(gpuMask, &gpuInstance);
-    if (IS_GSP_CLIENT(pGpu))
-    {
-        if (gpumgrGetPcieP2PCapsFromCache(gpuMask, pP2PWriteCapStatus, pP2PReadCapStatus))
-        {
-            return NV_OK;
-        }
-    }
-
-    // Check for hypervisor oriented PCIe P2P overrides
+    // Hypervisor policy is already a complete host-topology decision.
     if (pHypervisor &&
         pHypervisor->bDetected &&
         hypervisorPcieP2pDetection(pHypervisor, gpuMask))
     {
-        *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_OK;
-        *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_OK;
-        goto done;
+        *pbCommonPciSwitch = NV_FALSE;
+        *pbHypervisorOverride = NV_TRUE;
+        return NV_OK;
     }
 
-    // If the PCIE topology cannot be accessed do not allow P2P
     if (!pCl->ChipsetInitialized)
     {
         *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
-        *pP2PWriteCapStatus= NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
-        goto done;
+        *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+        *pbCommonPciSwitch = NV_FALSE;
+        return NV_OK;
     }
 
-    // PCI-E topology checks
-    gpuInstance = 0;
     while ((pGpu = gpumgrGetNextGpu(gpuMask, &gpuInstance)) != NULL)
     {
-        //
-        // While PCI-E P2P transactions are forwarded between different
-        // root ports implemented within a given Intel I/O hub, they
-        // are not forwarded between any two I/O hubs. We must therefore
-        // complement the table-driven chipset validation check below
-        // with an IOH-specific topology check.
-        //
+        NvU16 deviceID;
+
         if (pGpu->gpuClData.rootPort.addr.valid &&
             (pGpu->gpuClData.rootPort.VendorID == PCI_VENDOR_ID_INTEL))
         {
@@ -477,24 +505,24 @@ _kp2pCapsGetStatusOverPcie
                 ((deviceID >= DEVICE_ID_INTEL_6F01_ROOT_PORT) &&
                  (deviceID <= DEVICE_ID_INTEL_6F0B_ROOT_PORT)) ||
                 (deviceID == DEVICE_ID_INTEL_3420_ROOT_PORT) ||
-                 (deviceID == DEVICE_ID_INTEL_3421_ROOT_PORT))
+                (deviceID == DEVICE_ID_INTEL_3421_ROOT_PORT))
             {
-                if (iohDomain_ref == 0xFFFFFFFF)
+                if (iohDomainRef == 0xFFFFFFFF)
                 {
-                    iohDomain_ref = pGpu->gpuClData.rootPort.addr.domain;
-                    iohBus_ref = pGpu->gpuClData.rootPort.addr.bus;
+                    iohDomainRef = pGpu->gpuClData.rootPort.addr.domain;
+                    iohBusRef = pGpu->gpuClData.rootPort.addr.bus;
                 }
-                else if ((iohDomain_ref != pGpu->gpuClData.rootPort.addr.domain) ||
-                         (iohBus_ref != pGpu->gpuClData.rootPort.addr.bus))
+                else if ((iohDomainRef != pGpu->gpuClData.rootPort.addr.domain) ||
+                         (iohBusRef != pGpu->gpuClData.rootPort.addr.bus))
                 {
                     *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_IOH_TOPOLOGY_NOT_SUPPORTED;
                     *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_IOH_TOPOLOGY_NOT_SUPPORTED;
-                    goto done;
+                    *pbCommonPciSwitch = NV_FALSE;
+                    return NV_OK;
                 }
             }
         }
 
-        // Test common bridges. Skip first GPU
         if (pFirstGpu == NULL)
         {
             pFirstGpu = pGpu;
@@ -503,34 +531,90 @@ _kp2pCapsGetStatusOverPcie
 
         if (!areGpusP2PCompatible(pFirstGpu, pGpu))
         {
-            *pP2PReadCapStatus  = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+            *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
             *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
-            goto done;
+            *pbCommonPciSwitch = NV_FALSE;
+            return NV_OK;
         }
 
-        // This call returns the most upper bridge
         clFindCommonDownstreamBR(pFirstGpu, pGpu, pCl, &pciSwitchBus);
+        if (pciSwitchBusRef == 0xFF)
+            pciSwitchBusRef = pciSwitchBus;
 
-        if (pciSwitchBus_ref == 0xFF)
-        {
-            pciSwitchBus_ref = pciSwitchBus;
-        }
-
-        // If no bridge found or different to the one previously found
-        if ((pciSwitchBus == 0xFF) || (pciSwitchBus_ref != pciSwitchBus))
-        {
+        if ((pciSwitchBus == 0xFF) || (pciSwitchBusRef != pciSwitchBus))
             bCommonPciSwitchFound = NV_FALSE;
+    }
+
+    if ((!pCl->bPciePeerReadCapable || !pCl->bPciePeerWriteCapable) &&
+        !bCommonPciSwitchFound)
+    {
+        *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_CHIPSET_NOT_SUPPORTED;
+        *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_CHIPSET_NOT_SUPPORTED;
+    }
+
+    *pbCommonPciSwitch = bCommonPciSwitchFound;
+    return NV_OK;
+}
+
+/**
+ * @brief Check GPU Pcie mailbox P2P capability
+ *
+ * The host/topology result is supplied by the transport-neutral discovery
+ * helper so a cached mailbox result cannot bypass discovery needed by BAR1.
+ */
+static NV_STATUS
+_kp2pCapsGetStatusOverPcie
+(
+    NvU32   gpuMask,
+    NvU8   *pP2PWriteCapStatus,
+    NvU8   *pP2PReadCapStatus,
+    NvU8    topologyWriteCapStatus,
+    NvU8    topologyReadCapStatus,
+    NvBool  bHypervisorOverride
+)
+{
+    OBJGPU *pGpu = NULL;
+    OBJGPU *pFirstGpu = NULL;
+    NvU32 gpuInstance = 0;
+    KernelBif *pKernelBif = NULL;
+    NvU8 gpuP2PReadCapsStatus = NV0000_P2P_CAPS_STATUS_OK;
+    NvU8 gpuP2PWriteCapsStatus = NV0000_P2P_CAPS_STATUS_OK;
+    NvU8 cachedReadCapsStatus;
+    NvU8 cachedWriteCapsStatus;
+    NvU32 lockedGpuMask = 0;
+    NV_STATUS status = NV_OK;
+    NvU8 unused; // atomics are never supported for mailbox PCIe.
+
+    // Check if any overrides are enabled.
+    if (_kp2pCapsCheckStatusOverridesForPcie(gpuMask, pP2PWriteCapStatus,
+                                            pP2PReadCapStatus, &unused))
+    {
+        return NV_OK;
+    }
+
+    *pP2PWriteCapStatus = topologyWriteCapStatus;
+    *pP2PReadCapStatus = topologyReadCapStatus;
+
+    if (bHypervisorOverride)
+        goto done;
+
+    pGpu = gpumgrGetNextGpu(gpuMask, &gpuInstance);
+    pFirstGpu = pGpu;
+    NV_ASSERT_OR_RETURN(pFirstGpu != NULL, NV_ERR_INVALID_ARGUMENT);
+
+    if (IS_GSP_CLIENT(pGpu))
+    {
+        if (gpumgrGetPcieP2PCapsFromCache(gpuMask, &cachedWriteCapsStatus, &cachedReadCapsStatus))
+        {
+            if (*pP2PWriteCapStatus == NV0000_P2P_CAPS_STATUS_OK)
+                *pP2PWriteCapStatus = cachedWriteCapsStatus;
+            if (*pP2PReadCapStatus == NV0000_P2P_CAPS_STATUS_OK)
+                *pP2PReadCapStatus = cachedReadCapsStatus;
+            return NV_OK;
         }
     }
 
     // Check if GPUs have the HW P2P implementation
-
-    // Only lock for GSP_CLIENT. Get one GPU.
-    if (pFirstGpu == NULL)
-    {
-        gpuInstance = 0;
-        pFirstGpu = gpumgrGetNextGpu(gpuMask, &gpuInstance);
-    }
 
     if (IS_GSP_CLIENT(pFirstGpu))
     {
@@ -549,23 +633,9 @@ _kp2pCapsGetStatusOverPcie
         }
     }
 
-    // Reset P2P caps as statuses will be accumulated below.
-    *pP2PReadCapStatus = *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_OK;
-
     gpuInstance = 0;
     while ((pGpu = gpumgrGetNextGpu(gpuMask, &gpuInstance)) != NULL)
     {
-        //
-        // If the chipset is not capable AND there is no common PCIe switch,
-        // then P2P is not supported.
-        //
-        if ((!pCl->bPciePeerReadCapable || !pCl->bPciePeerWriteCapable) &&
-            (!bCommonPciSwitchFound))
-        {
-            *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_CHIPSET_NOT_SUPPORTED;
-            *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_CHIPSET_NOT_SUPPORTED;
-        }
-
         // GPU specific P2P caps
         pKernelBif = GPU_GET_KERNEL_BIF(pGpu);
         if (pKernelBif->getProperty(pKernelBif, PDB_PROP_KBIF_P2P_WRITES_DISABLED))
@@ -614,11 +684,6 @@ done:
         {
             *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
         }
-    }
-
-    if (pbCommonPciSwitch != NULL)
-    {
-        *pbCommonPciSwitch = bCommonPciSwitchFound;
     }
 
     //
@@ -711,16 +776,22 @@ _kp2pCapsGetStatusOverPcieBar1
     NvU8   *pP2PWriteCapStatus,
     NvU8   *pP2PReadCapStatus,
     NvU8   *pP2PAtomicsCapStatus,
-    NvBool  bCommonPciSwitchFound
+    NvU8    topologyWriteCapStatus,
+    NvU8    topologyReadCapStatus,
+    NvBool  bCommonPciSwitchFound,
+    NvBool  bBar1Eligible
 )
 {
-    OBJGPU    *pGpuPeer    = NULL;
     NvU32      gpuInstance = 0;
     OBJGPU    *pFirstGpu   = gpumgrGetNextGpu(gpuMask, &gpuInstance);
     KernelBif *pKernelBif  = GPU_GET_KERNEL_BIF(pFirstGpu);
-    NvU8 writeCapStatus = *pP2PWriteCapStatus;
-    NvU8 readCapStatus = *pP2PReadCapStatus;
-    NvU8 atomicsCapStatus = *pP2PAtomicsCapStatus;
+    NvU8 writeCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+    NvU8 readCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+    NvU8 atomicsCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+
+    *pP2PWriteCapStatus = topologyWriteCapStatus;
+    *pP2PReadCapStatus = topologyReadCapStatus;
+    *pP2PAtomicsCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
 
     if (((pKernelBif->forceP2PType != NV_REG_STR_RM_FORCE_P2P_TYPE_DEFAULT) &&
          (pKernelBif->forceP2PType != NV_REG_STR_RM_FORCE_P2P_TYPE_PCIEP2P))
@@ -728,22 +799,16 @@ _kp2pCapsGetStatusOverPcieBar1
         ((pKernelBif->pcieP2PType != NV_REG_STR_RM_PCIEP2P_TYPE_BAR1) &&
          (pKernelBif->pcieP2PType != NV_REG_STR_RM_PCIEP2P_TYPE_AUTO)))
     {
+        *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+        *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
         return NV_ERR_NOT_SUPPORTED;
     }
 
-    //
-    // Re-initialize to check loop back configuration if only single GPU in
-    // requested mask.
-    //
-    gpuInstance = (gpumgrGetSubDeviceCount(gpuMask) > 1) ? gpuInstance : 0;
-
-    while ((pGpuPeer = gpumgrGetNextGpu(gpuMask, &gpuInstance)) != NULL)
+    if (!bBar1Eligible)
     {
-        if (!kbusIsPcieBar1P2PMappingSupported_HAL(pFirstGpu, GPU_GET_KERNEL_BUS(pFirstGpu),
-                                                   pGpuPeer, GPU_GET_KERNEL_BUS(pGpuPeer)))
-        {
-            return NV_ERR_NOT_SUPPORTED;
-        }
+        *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_GPU_NOT_SUPPORTED;
+        *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_GPU_NOT_SUPPORTED;
+        return NV_ERR_NOT_SUPPORTED;
     }
 
     // Check if any overrides are enabled.
@@ -752,6 +817,12 @@ _kp2pCapsGetStatusOverPcieBar1
                                              pP2PAtomicsCapStatus))
     {
         return NV_OK;
+    }
+
+    if ((*pP2PReadCapStatus != NV0000_P2P_CAPS_STATUS_OK) ||
+        (*pP2PWriteCapStatus != NV0000_P2P_CAPS_STATUS_OK))
+    {
+        return NV_ERR_NOT_SUPPORTED;
     }
 
     NV_CHECK_OK_OR_RETURN(LEVEL_ERROR,
@@ -773,10 +844,7 @@ _kp2pCapsGetStatusOverPcieBar1
     // If p2p traffic is supported, check the PCIe topology for atomics capability
     _p2pCapsGetPcieToplogySupportForBar1Atomics(gpuMask, &atomicsCapStatus);
 
-    if (atomicsCapStatus == NV0000_P2P_CAPS_STATUS_OK)
-    {
-        *pP2PAtomicsCapStatus = atomicsCapStatus;
-    }
+    *pP2PAtomicsCapStatus = atomicsCapStatus;
 
     return NV_OK;
 }
@@ -796,6 +864,11 @@ p2pGetCapsStatus
     OBJGPU       *pGpu          = NULL;
     NvU32         gpuInstance   = 0;
     NvBool        bCommonSwitchFound = NV_FALSE;
+    NvBool        bHypervisorPcieOverride = NV_FALSE;
+    NvBool        bPcieP2PEnabled = NV_TRUE;
+    NvBool        bBar1Eligible = NV_TRUE;
+    NvU8          topologyWriteCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+    NvU8          topologyReadCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
 
     if ((pP2PWriteCapStatus == NULL) ||
         (pP2PReadCapStatus == NULL)  ||
@@ -902,29 +975,96 @@ p2pGetCapsStatus
     // if either read or write is supported, return success. See
     // _kp2pCapsCheckStatusOverridesForPcie for details.
     //
-    if (_kp2pCapsGetStatusOverPcie(gpuMask, pP2PWriteCapStatus,
-                                  pP2PReadCapStatus, &bCommonSwitchFound) == NV_OK)
+    gpuInstance = 0;
+    pGpu = gpumgrGetNextGpu(gpuMask, &gpuInstance);
+    NV_ASSERT_OR_RETURN(pGpu != NULL, NV_ERR_INVALID_ARGUMENT);
+
+    bBar1Eligible = GPU_GET_KERNEL_BUS(pGpu)->getProperty(
+        GPU_GET_KERNEL_BUS(pGpu), PDB_PROP_KBUS_SUPPORT_BAR1_P2P_BY_DEFAULT);
+    bPcieP2PEnabled = _kp2pCapsIsPcieP2PEnabled(pGpu);
+    if (!bPcieP2PEnabled)
     {
-        if ((*pP2PWriteCapStatus == NV0000_P2P_CAPS_STATUS_OK) ||
-            (*pP2PReadCapStatus == NV0000_P2P_CAPS_STATUS_OK))
+        *pP2PReadCapStatus = NV0000_P2P_CAPS_STATUS_DISABLED_BY_REGKEY;
+        *pP2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_DISABLED_BY_REGKEY;
+        _kp2pCapsLogPolicyOnce(
+            gpuMask, pGpu, NV_FALSE, bBar1Eligible,
+            pGpu->pcieP2PWriteCaps, pGpu->pcieP2PReadCaps,
+            *pP2PWriteCapStatus, *pP2PReadCapStatus, *pConnectivity);
+        return NV_OK;
+    }
+
+    if (_kp2pCapsGetTopologyStatusOverPcie(gpuMask, &topologyWriteCapStatus,
+                                           &topologyReadCapStatus, &bCommonSwitchFound,
+                                           &bHypervisorPcieOverride) == NV_OK)
+    {
+        NvU8 mailboxWriteCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+        NvU8 mailboxReadCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+        NvU8 bar1P2PWriteCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+        NvU8 bar1P2PReadCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+        NvU8 bar1P2PAtomicsCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
+        OBJGPU *pFirstPcieGpu;
+        KernelBif *pFirstKernelBif;
+
+        gpuInstance = 0;
+        pFirstPcieGpu = gpumgrGetNextGpu(gpuMask, &gpuInstance);
+        NV_ASSERT_OR_RETURN(pFirstPcieGpu != NULL, NV_ERR_INVALID_ARGUMENT);
+        pFirstKernelBif = GPU_GET_KERNEL_BIF(pFirstPcieGpu);
+        bBar1Eligible = gpumgrGetSubDeviceCount(gpuMask) > 1;
+
+        while ((pGpu = gpumgrGetNextGpu(gpuMask, &gpuInstance)) != NULL)
         {
-            NvU8 bar1P2PWriteCapStatus = *pP2PWriteCapStatus;
-            NvU8 bar1P2PReadCapStatus = *pP2PReadCapStatus;
-            NvU8 bar1P2PAtomicsCapStatus = NV0000_P2P_CAPS_STATUS_NOT_SUPPORTED;
-
-            *pConnectivity = P2P_CONNECTIVITY_PCIE_PROPRIETARY;
-
-            if (_kp2pCapsGetStatusOverPcieBar1(gpuMask, &bar1P2PWriteCapStatus,
-                    &bar1P2PReadCapStatus, &bar1P2PAtomicsCapStatus, bCommonSwitchFound) == NV_OK)
+            if (!kbusIsPcieBar1P2PMappingSupported_HAL(
+                    pFirstPcieGpu, GPU_GET_KERNEL_BUS(pFirstPcieGpu),
+                    pGpu, GPU_GET_KERNEL_BUS(pGpu)))
             {
-                *pP2PWriteCapStatus = bar1P2PWriteCapStatus;
-                *pP2PReadCapStatus = bar1P2PReadCapStatus;
-                *pP2PAtomicsCapStatus = bar1P2PAtomicsCapStatus;
-                *pConnectivity = P2P_CONNECTIVITY_PCIE_BAR1;
+                bBar1Eligible = NV_FALSE;
+                break;
             }
+        }
 
+        // Always preserve the raw mailbox result for transport-specific users
+        // and diagnostics, even when BAR1 is the effective transport.
+        _kp2pCapsGetStatusOverPcie(gpuMask, &mailboxWriteCapStatus,
+                                   &mailboxReadCapStatus, topologyWriteCapStatus,
+                                   topologyReadCapStatus, bHypervisorPcieOverride);
+
+        if (pFirstKernelBif->pcieP2PType == NV_REG_STR_RM_PCIEP2P_TYPE_MAILBOX)
+        {
+            *pP2PWriteCapStatus = mailboxWriteCapStatus;
+            *pP2PReadCapStatus = mailboxReadCapStatus;
+            if ((mailboxWriteCapStatus == NV0000_P2P_CAPS_STATUS_OK) ||
+                (mailboxReadCapStatus == NV0000_P2P_CAPS_STATUS_OK))
+            {
+                *pConnectivity = P2P_CONNECTIVITY_PCIE_PROPRIETARY;
+            }
+            _kp2pCapsLogPolicyOnce(
+                gpuMask, pFirstPcieGpu, bPcieP2PEnabled, bBar1Eligible,
+                mailboxWriteCapStatus, mailboxReadCapStatus,
+                *pP2PWriteCapStatus, *pP2PReadCapStatus, *pConnectivity);
             return NV_OK;
         }
+
+        // BAR1 and AUTO are independent of mailbox success and never fall
+        // back to mailbox when BAR1 fails.
+        if (_kp2pCapsGetStatusOverPcieBar1(gpuMask, &bar1P2PWriteCapStatus,
+                                           &bar1P2PReadCapStatus,
+                                           &bar1P2PAtomicsCapStatus,
+                                           topologyWriteCapStatus,
+                                           topologyReadCapStatus,
+                                           bCommonSwitchFound,
+                                           bBar1Eligible) == NV_OK)
+        {
+            *pConnectivity = P2P_CONNECTIVITY_PCIE_BAR1;
+        }
+
+        *pP2PWriteCapStatus = bar1P2PWriteCapStatus;
+        *pP2PReadCapStatus = bar1P2PReadCapStatus;
+        *pP2PAtomicsCapStatus = bar1P2PAtomicsCapStatus;
+        _kp2pCapsLogPolicyOnce(
+            gpuMask, pFirstPcieGpu, bPcieP2PEnabled, bBar1Eligible,
+            mailboxWriteCapStatus, mailboxReadCapStatus,
+            *pP2PWriteCapStatus, *pP2PReadCapStatus, *pConnectivity);
+        return NV_OK;
     }
 
     return NV_OK;
