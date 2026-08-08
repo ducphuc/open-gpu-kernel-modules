@@ -70,6 +70,9 @@ than NVIDIA's upstream issue tracker.
 RTX 5060 Ti (GB206) PCIe P2P policy validation record:
 [`validation/pcie-p2p-policy-2026-08-07.md`](validation/pcie-p2p-policy-2026-08-07.md).
 
+NVIDIA 610.57.04 full-stack and DRM release validation record:
+[`validation/610.57.04-full-stack-validation-2026-08-08.md`](validation/610.57.04-full-stack-validation-2026-08-08.md).
+
 Run the sandbox-safe policy tests with:
 
     make -C tests check

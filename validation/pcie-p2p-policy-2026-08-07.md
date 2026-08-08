@@ -120,6 +120,18 @@ This is an environment/kernel-interface build limitation that remains to be
 resolved before claiming candidate display-module load coverage. It occurred
 before capability or mapping execution and does not change the P2P results.
 
+## Resolved full-stack follow-up
+
+The limitation above is retained as historical context. The follow-up on
+2026-08-08 established that the symbol was available from the modular
+`drm_ttm_helper` provider and that raw `insmod` had bypassed dependency
+loading; it was not a source or kernel-interface defect. A clean rebuild and
+dependency-aware load validated all five candidate modules, DRM initialization,
+the P2P and DMA-BUF switch matrix, repeated unload/reload, and bounded kernel
+health. See
+[`610.57.04-full-stack-validation-2026-08-08.md`](610.57.04-full-stack-validation-2026-08-08.md)
+for the final evidence and release decision.
+
 ## Deferred coverage
 
 This bounded pass does not claim concurrent registration stress, repeated
