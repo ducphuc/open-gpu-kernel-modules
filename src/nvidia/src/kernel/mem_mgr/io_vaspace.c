@@ -477,6 +477,13 @@ _iovaspaceCreateMapping
     memdescAddIommuMap(pPhysMemDesc, pIovaMapping);
     ++pIOVAS->mappingCount;
 
+    //
+    // A mapping may be retained by a duplicated memory handle after the GPU's
+    // normal DMA teardown has released its reference to this IOVA space. Keep
+    // the IOVA space alive until the mapping itself is destroyed.
+    //
+    vaspaceIncRefCnt(pVAS);
+
     return NV_OK;
 
 error:
@@ -545,6 +552,10 @@ _iovaspaceDestroyRootMapping
     portMemFree(pIovaMapping);
 
     --pIOVAS->mappingCount;
+
+    // Drop the reference acquired when the root mapping was created. This can
+    // delete pIOVAS, so it must be the final operation in this function.
+    vmmDestroyVaspace(SYS_GET_VMM(SYS_GET_INSTANCE()), staticCast(pIOVAS, OBJVASPACE));
 }
 
 void

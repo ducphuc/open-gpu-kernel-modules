@@ -99,6 +99,15 @@ struct OS_RM_CAPS
     nv_cap_t **caps;
 };
 
+// OS state needed to tear down a system-memory IOVA mapping without looking
+// up an RM GPU object. The GPU can be detached before a duplicated memory
+// handle releases its last reference to the mapping.
+struct OS_IOVA_MAPPING_DATA
+{
+    nv_dma_device_t *pDmaDevice;
+    void            *pDmaMapPrivate;
+};
+
 NvBool osIsRaisedIRQL(void)
 {
     return (!os_semaphore_may_sleep());
@@ -2338,7 +2347,8 @@ cliresCtrlCmdOsUnixFlushUserCache_IMPL
                 return NV_ERR_INVALID_ARGUMENT;
             }
 
-            nv_dma_cache_invalidate(nv->dma_dev, pIovaMapping->pOsData);
+            nv_dma_cache_invalidate(pIovaMapping->pOsData->pDmaDevice,
+                                    pIovaMapping->pOsData->pDmaMapPrivate);
         }
         else
         {
@@ -3658,6 +3668,7 @@ osIovaMap
     NvBool bIsContig;
     NV_ADDRESS_SPACE addressSpace;
     NvU32 osPageCount;
+    POS_IOVA_MAPPING_DATA pOsMappingData = NULL;
 
     if (pIovaMapping == NULL)
     {
@@ -3796,21 +3807,32 @@ osIovaMap
     {
         NvBool bReadOnlyDeviceMap =
             osMemDescRequiresReadOnlyDeviceDmaMap(pIovaMapping->pPhysMemDesc);
+        nv_dma_device_t *pDmaDevice =
+            osGetDmaDeviceForMemDesc(nv, pIovaMapping->pPhysMemDesc);
+
+        status = os_alloc_mem((void **)&pOsMappingData, sizeof(*pOsMappingData));
+        if (status != NV_OK)
+            return status;
+
+        pOsMappingData->pDmaDevice = pDmaDevice;
+        pOsMappingData->pDmaMapPrivate = pPriv;
 
         status = nv_dma_map_alloc(
-                    osGetDmaDeviceForMemDesc(nv, pIovaMapping->pPhysMemDesc),
+                    pDmaDevice,
                     osPageCount,
                     &pIovaMapping->iovaArray[0],
-                    bIsContig, bReadOnlyDeviceMap, &pPriv);
+                    bIsContig, bReadOnlyDeviceMap,
+                    &pOsMappingData->pDmaMapPrivate);
         if (status != NV_OK)
         {
             NV_PRINTF(LEVEL_ERROR,
                       "%s: failed to map allocation (status = 0x%x)\n",
                       __FUNCTION__, status);
+            os_free_mem(pOsMappingData);
             return status;
         }
 
-        pIovaMapping->pOsData = pPriv;
+        pIovaMapping->pOsData = pOsMappingData;
     }
     else if (peer != nv)
     {
@@ -3871,16 +3893,11 @@ osIovaUnmap
     OBJGPU *pGpu;
     nv_state_t *nv;
     void *pPriv;
+    POS_IOVA_MAPPING_DATA pOsMappingData;
     NV_STATUS status;
     NvU64 osPageCount;
 
     if (pIovaMapping == NULL)
-    {
-        return;
-    }
-
-    pGpu = gpumgrGetGpuFromId(pIovaMapping->iovaspaceId);
-    if (pGpu == NULL)
     {
         return;
     }
@@ -3895,9 +3912,26 @@ osIovaUnmap
         return;
     }
 
-    nv = NV_GET_NV_STATE(pGpu);
+    pOsMappingData = pIovaMapping->pOsData;
 
-    if (skipIovaMappingForTegra(pIovaMapping, nv))
+    // System-memory mappings retain the DMA context used at map time, so they
+    // do not require the RM GPU object to still be attached at unmap time.
+    if (pOsMappingData == NULL)
+    {
+        pGpu = gpumgrGetGpuFromId(pIovaMapping->iovaspaceId);
+        if (pGpu == NULL)
+        {
+            return;
+        }
+
+        nv = NV_GET_NV_STATE(pGpu);
+    }
+    else
+    {
+        nv = NULL;
+    }
+
+    if ((nv != NULL) && skipIovaMappingForTegra(pIovaMapping, nv))
     {
         return;
     }
@@ -3924,7 +3958,7 @@ osIovaUnmap
     // TODO: Formalize the interface with the OS layers so we can use a common
     // definition of OS_IOVA_MAPPING_DATA.
     //
-    pPriv = (void *)pIovaMapping->pOsData;
+    pPriv = (pOsMappingData != NULL) ? pOsMappingData->pDmaMapPrivate : NULL;
 
     if (IS_DISCONTIG_AND_DYNGRAN_ENABLED(pIovaMapping->pPhysMemDesc))
     {
@@ -3937,9 +3971,9 @@ osIovaUnmap
                                 pIovaMapping->pPhysMemDesc->PageCount);
     }
 
-    if (pPriv != NULL)
+    if (pOsMappingData != NULL)
     {
-        status = nv_dma_unmap_alloc(nv->dma_dev,
+        status = nv_dma_unmap_alloc(pOsMappingData->pDmaDevice,
             osPageCount,
             &pIovaMapping->iovaArray[0], &pPriv);
         if (status != NV_OK)
@@ -3948,6 +3982,8 @@ osIovaUnmap
                       "%s: failed to unmap allocation (status = 0x%x)\n",
                       __FUNCTION__, status);
         }
+
+        os_free_mem(pOsMappingData);
     }
     else
     {
