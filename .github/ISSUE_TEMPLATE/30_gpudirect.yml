@@ -1,0 +1,90 @@
+name: GPUDirect issue
+description: Report a supported, rejected, or unstable GPUDirect P2P or RDMA path.
+labels:
+  - "bug"
+body:
+- type: markdown
+  attributes:
+    value: |
+      Use this form for GPUDirect P2P or GPUDirect RDMA / DMA-BUF behavior on this fork. See GPUDIRECT.md for policy and validation requirements. Remove serial numbers, hostnames, and unrelated private data from logs before attaching them.
+- type: dropdown
+  id: affected_path
+  attributes:
+    label: Affected path
+    options:
+      - GPUDirect P2P
+      - GPUDirect RDMA / DMA-BUF
+      - Both
+      - Unsure
+  validations:
+    required: true
+- type: input
+  id: revision
+  attributes:
+    label: Driver, CUDA/userspace version, and exact commit
+    description: Include the NVIDIA driver and CUDA/userspace versions and the full repository commit SHA.
+  validations:
+    required: true
+- type: textarea
+  id: module_identity
+  attributes:
+    label: Loaded module identity
+    description: Paste `uname -a` and `modinfo -F srcversion` for nvidia, nvidia_uvm, nvidia_modeset, and nvidia_drm.
+  validations:
+    required: true
+- type: textarea
+  id: hardware
+  attributes:
+    label: GPUs and PCI IDs
+    description: Paste `nvidia-smi -L` and relevant `lspci -nn` output for every GPU and peer device.
+  validations:
+    required: true
+- type: textarea
+  id: importer
+  attributes:
+    label: Importer details (required for GPUDirect RDMA / DMA-BUF)
+    description: Include the importer device, PCI ID, driver, DMA mask, IOMMU-domain mode, and GPU-to-importer PCIe topology. Enter "Not applicable" for GPUDirect P2P-only reports.
+  validations:
+    required: true
+- type: textarea
+  id: topology
+  attributes:
+    label: PCIe and IOMMU topology
+    description: Include `nvidia-smi topo -m`, the relevant PCI tree, IOMMU group/domain mode, and Resizable BAR state.
+  validations:
+    required: true
+- type: textarea
+  id: parameters
+  attributes:
+    label: P2P parameters
+    description: Paste EnablePcieP2P, EnableDmaBufP2P, RMPcieP2PType, and any ForceP2P-related values from `/proc/driver/nvidia/params`.
+  validations:
+    required: true
+- type: textarea
+  id: capabilities
+  attributes:
+    label: Capability results
+    description: Paste `nvidia-smi topo -p2p r`, `w`, and `a`, plus the kernel line beginning `PCIe P2P policy:`.
+  validations:
+    required: true
+- type: textarea
+  id: reproduction
+  attributes:
+    label: Bounded reproduction
+    description: Provide the exact CUDA peer-copy or DMA-BUF / RDMA command, its result and exit code, and expected versus observed behavior. For RDMA, include evidence that identifies the selected memory-registration path.
+  validations:
+    required: true
+- type: textarea
+  id: kernel_log
+  attributes:
+    label: Relevant kernel-log interval
+    description: Attach only the interval covering the test and teardown, including any Xid, RM assertion, MMU/IOMMU, AER, IOVA-space, warning, oops, or hung-task lines.
+  validations:
+    required: true
+- type: textarea
+  id: recovery
+  attributes:
+    label: Post-test health and comparison
+    description: State whether both GPUs remained usable, whether reloading official modules restored operation, and how the matching official driver behaves.
+  validations:
+    required: true

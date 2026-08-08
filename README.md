@@ -3,6 +3,73 @@
 This is the source release of the NVIDIA Linux open GPU kernel modules,
 version 610.57.04.
 
+## GPUDirect support for GeForce GPUs
+
+The goal of this project is to provide **GPUDirect Peer-to-Peer (P2P)** and
+**GPUDirect RDMA** support for GeForce GPUs.
+
+It provides two independent paths:
+
+- **GPUDirect Peer-to-Peer (P2P):** enables direct GPU-to-GPU copies and
+  direct loads and stores over PCIe. This capability is commonly searched for
+  as **CUDA P2P**, **CUDA peer-to-peer**, or **CUDA peer access**, including
+  CUDA APIs such as `cudaDeviceEnablePeerAccess()`.
+- **GPUDirect RDMA:** enables third-party PCIe devices such as NICs to access
+  GPU memory directly through DMA-BUF backed by static BAR1, subject to
+  importer and PCIe-topology validation.
+
+The project is focused on GeForce GPUs. The DMA-BUF implementation is
+capability-based rather than restricted by GPU architecture, device ID, or
+product class, so other non-coherent GPUs that satisfy the same BAR1,
+topology, DMA-addressability, and IOMMU requirements can benefit from the same
+path.
+
+## CUDA userspace prerequisite for GPUDirect RDMA
+
+The GPUDirect RDMA kernel changes are necessary, but they are not sufficient
+by themselves. Stock CUDA userspace does not advertise the required DMA-BUF
+capability on the validated GeForce configuration.
+
+See [GPUDIRECT.md](GPUDIRECT.md) for the full userspace prerequisite,
+validation scope, and supporting references.
+
+## GPUDirect policy and validation
+
+GPUDirect P2P over PCIe and DMA-BUF P2P are independently controlled and both
+default to enabled:
+
+    NVreg_EnablePcieP2P=1
+    NVreg_EnableDmaBufP2P=1
+
+For GPUDirect P2P over PCIe, static BAR1 is enabled only where the required
+runtime capabilities are present. Resizable BAR and architecture handlers are
+not forced on unsupported GPUs. Automatic PCIe transport selection reads BAR1
+state independently of the raw GSP mailbox result and does not fall back to
+mailbox P2P. Architecture, GPU-pair, PCIe-topology, and BAR1 checks are
+fail-closed. `RMPcieP2PType=MAILBOX` remains an explicit diagnostic override.
+
+The DMA-BUF path applies additional importer-specific checks: the exported
+range must be wholly contained in a usable static BAR1 mapping, MIG state must
+be compatible, the importer DMA mask must cover the mapping, the importer
+must use an identity IOMMU domain, and Linux PCI P2PDMA must accept the peer
+topology. The existing coherent DMA-BUF path remains unchanged.
+
+The GPUDirect P2P path, including CUDA peer-access APIs, has been validated on
+RTX 3090, RTX 4090, RTX 5090, and RTX 5060 Ti. GPUDirect RDMA through the
+DMA-BUF path has been validated on RTX 5060 Ti (GB206).
+
+Validation is release-specific. Results obtained on 610.43.03 are historical
+evidence only; see [GPUDIRECT.md](GPUDIRECT.md) for the current validation
+requirements and provenance rules.
+
+Detailed GPUDirect policy, validation requirements, and reporting guidance
+are documented in [GPUDIRECT.md](GPUDIRECT.md). Issues specific to the
+GPUDirect extensions in this fork should be reported to this repository rather
+than NVIDIA's upstream issue tracker.
+
+Run the sandbox-safe policy tests with:
+
+    make -C tests check
 
 ## How to Build
 
@@ -79,53 +146,43 @@ This is currently Linux kernel 4.15 or newer.
 
 ## How to Contribute
 
-Contributions can be made by creating a pull request on
-https://github.com/NVIDIA/open-gpu-kernel-modules
-We'll respond via GitHub.
+Contributions to the GPUDirect extensions in this repository should be made
+through this fork's GitHub repository. Before submitting changes, review
+[GPUDIRECT.md](GPUDIRECT.md) for policy, validation expectations, and reporting
+requirements.
 
-Note that when submitting a pull request, you will be prompted to accept
-a Contributor License Agreement.
-
-This code base is shared with NVIDIA's proprietary drivers, and various
-processing is performed on the shared code to produce the source code that is
-published here.  This has several implications for the foreseeable future:
-
-* The GitHub repository will function mostly as a snapshot of each driver
-  release.
-
-* We do not expect to be able to provide revision history for individual
-  changes that were made to NVIDIA's shared code base.  There will likely
-  only be one git commit per driver release.
-
-* We may not be able to reflect individual contributions as separate
-  git commits in the GitHub repository.
-
-* Because the code undergoes various processing prior to publishing here,
-  contributions made here require manual merging to be applied to the shared
-  code base.  Therefore, large refactoring changes made here may be difficult to
-  merge and accept back into the shared code base.  If you have large
-  refactoring to suggest, please contact us in advance, so we can coordinate.
-
+Changes intended for NVIDIA's upstream Open GPU Kernel Modules should follow
+NVIDIA's upstream contribution process instead.
 
 ## How to Report Issues
 
-Problems specific to the Open GPU Kernel Modules can be reported in the
-Issues section of the https://github.com/NVIDIA/open-gpu-kernel-modules
-repository.
+Issues specific to the GPUDirect Peer-to-Peer or GPUDirect RDMA extensions in
+this repository should be reported to this fork's GitHub issue tracker. Include
+the diagnostics and validation information requested in
+[GPUDIRECT.md](GPUDIRECT.md).
 
-Further, any of the existing bug reporting venues can be used to communicate
-problems to NVIDIA, such as our forum:
+Problems reproducible with an unmodified NVIDIA driver should be reported
+through NVIDIA's normal support channels rather than attributed to these
+out-of-tree extensions.
 
-https://forums.developer.nvidia.com/c/gpu-graphics/linux/148
+For security vulnerabilities, please follow the guidance in
+[SECURITY.md](SECURITY.md).
 
-or linux-bugs@nvidia.com.
+## Project lineage and acknowledgments
 
-Please see the 'NVIDIA Contact Info and Additional Resources' section
-of the NVIDIA GPU Driver README for details.
+This repository is based on NVIDIA's
+[Open GPU Kernel Modules](https://github.com/NVIDIA/open-gpu-kernel-modules).
 
-Please see the separate [SECURITY.md](SECURITY.md) document if you
-believe you have discovered a security vulnerability in this software.
+The GeForce PCIe P2P work in this fork follows development originating in
+[tinygrad/open-gpu-kernel-modules](https://github.com/tinygrad/open-gpu-kernel-modules)
+and subsequently extended and maintained in
+[aikitoria/open-gpu-kernel-modules](https://github.com/aikitoria/open-gpu-kernel-modules).
+The current project builds on that lineage to provide GPUDirect Peer-to-Peer
+(P2P) and GPUDirect RDMA support for GeForce GPUs.
 
+[Harry Chen (`Harry-Chen`)](https://github.com/Harry-Chen) independently
+investigated GPUDirect RDMA on RTX 5090 and documented the CUDA userspace
+gating referenced above.
 
 ## Kernel Interface and OS-Agnostic Components of Kernel Modules
 

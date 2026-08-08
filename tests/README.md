@@ -13,9 +13,9 @@ non-empty. Partial, exact, and larger-than-client coverage are accepted without
 an implementation-specific exception.
 
 It also verifies that the non-coherent DMA-BUF GDR path does not replace the
-stock coherent path and requires an enabled policy, FORCE_PCIE, static BAR1,
-and the existing BAR1/MIG exclusions. Its range checks cover inside, spanning,
-outside, empty, and overflowing layouts.
+stock coherent path and requires FORCE_PCIE, static BAR1, and the existing
+BAR1/MIG exclusions. Its range checks cover inside, spanning, outside, empty,
+and overflowing layouts.
 
 The topology-policy test keeps the non-coherent importer exception limited to
 an enabled policy, a Linux-approved P2PDMA path, an identity IOMMU domain, and
