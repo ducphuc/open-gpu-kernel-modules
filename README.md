@@ -71,6 +71,9 @@ Run the sandbox-safe policy tests with:
 
     make -C tests check
 
+See `analysis/610.57.04-p2pdma-dmabuf.md` for the release-delta and porting
+analysis.
+
 ## How to Build
 
 To build:
