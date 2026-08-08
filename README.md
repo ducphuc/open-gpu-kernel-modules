@@ -67,6 +67,9 @@ are documented in [GPUDIRECT.md](GPUDIRECT.md). Issues specific to the
 GPUDirect extensions in this fork should be reported to this repository rather
 than NVIDIA's upstream issue tracker.
 
+RTX 5060 Ti (GB206) PCIe P2P policy validation record:
+[`validation/pcie-p2p-policy-2026-08-07.md`](validation/pcie-p2p-policy-2026-08-07.md).
+
 Run the sandbox-safe policy tests with:
 
     make -C tests check
