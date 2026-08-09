@@ -1,0 +1,4 @@
+mlx5_2 port_xmit_data 100412742943
+mlx5_2 port_rcv_data 100884898363
+mlx5_3 port_xmit_data 100412555982
+mlx5_3 port_rcv_data 100798086226

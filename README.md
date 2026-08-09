@@ -56,7 +56,11 @@ topology. The existing coherent DMA-BUF path remains unchanged.
 
 The GPUDirect P2P path, including CUDA peer-access APIs, has been validated on
 RTX 3090, RTX 4090, RTX 5090, and RTX 5060 Ti. GPUDirect RDMA through the
-DMA-BUF path has been validated on RTX 5060 Ti (GB206).
+DMA-BUF path has been validated on RTX 5060 Ti (GB206). The 610.57.04
+GPUDirect RDMA validation used two GPUs and mlx5 SR-IOV VFs in separate
+container network namespaces on one host; NCCL completed over
+`NET/IB/GDRDMA`. This result depends on the CUDA userspace prerequisite above
+and is limited to the tested topology.
 
 Validation is release-specific. Results obtained on 610.43.03 are historical
 evidence only; see [GPUDIRECT.md](GPUDIRECT.md) for the current validation
@@ -72,6 +76,11 @@ RTX 5060 Ti (GB206) PCIe P2P policy validation record:
 
 NVIDIA 610.57.04 full-stack and DRM release validation record:
 [`validation/610.57.04-full-stack-validation-2026-08-08.md`](validation/610.57.04-full-stack-validation-2026-08-08.md).
+
+NVIDIA 610.57.04 same-host containerized GPUDirect RDMA validation record:
+[`validation/nccl-same-host-gdr-validation-2026-08-09.md`](validation/nccl-same-host-gdr-validation-2026-08-09.md).
+The corresponding VF-netns harness is documented in
+[`validation/nccl-vf-netns-harness-usage-2026-08-09.md`](validation/nccl-vf-netns-harness-usage-2026-08-09.md).
 
 Run the sandbox-safe policy tests with:
 

@@ -1,0 +1,15 @@
+RDMA deltas:
+mlx5_2 port_rcv_data 25177513414
+mlx5_2 port_xmit_data 25081211379
+mlx5_3 port_rcv_data 25177511615
+mlx5_3 port_xmit_data 25081213069
+PPCNT port0 deltas:
+a_frames_received_ok 96301591
+a_frames_transmitted_ok 96301392
+a_octets_received_ok 100710215876
+a_octets_transmitted_ok 100710186222
+PPCNT port1 deltas:
+a_frames_received_ok 96301392
+a_frames_transmitted_ok 96301591
+a_octets_received_ok 100710186222
+a_octets_transmitted_ok 100710215876

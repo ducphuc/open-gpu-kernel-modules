@@ -1,0 +1,55 @@
+Sending access register...
+
+Field Name                                | Data    
+=======================================================
+grp                                       | 0x00000000
+port_type                                 | 0x00000000
+lp_msb                                    | 0x00000000
+pnat                                      | 0x00000000
+local_port                                | 0x00000001
+swid                                      | 0x00000000
+prio_tc                                   | 0x00000000
+grp_profile                               | 0x00000000
+plane_ind                                 | 0x00000000
+counters_cap                              | 0x00000000
+lp_gl                                     | 0x00000000
+clr                                       | 0x00000000
+a_frames_transmitted_ok_high              | 0x00000000
+a_frames_transmitted_ok_low               | 0x16f9c918
+a_frames_received_ok_high                 | 0x00000000
+a_frames_received_ok_low                  | 0x17034379
+a_frame_check_sequence_errors_high        | 0x00000000
+a_frame_check_sequence_errors_low         | 0x00000000
+a_alignment_errors_high                   | 0x00000000
+a_alignment_errors_low                    | 0x00000000
+a_octets_transmitted_ok_high              | 0x0000005d
+a_octets_transmitted_ok_low               | 0xe03f7a56
+a_octets_received_ok_high                 | 0x0000005e
+a_octets_received_ok_low                  | 0x099d4933
+a_multicast_frames_xmitted_ok_high        | 0x00000000
+a_multicast_frames_xmitted_ok_low         | 0x00000951
+a_broadcast_frames_xmitted_ok_high        | 0x00000000
+a_broadcast_frames_xmitted_ok_low         | 0x00000098
+a_multicast_frames_received_ok_high       | 0x00000000
+a_multicast_frames_received_ok_low        | 0x00000901
+a_broadcast_frames_received_ok_high       | 0x00000000
+a_broadcast_frames_received_ok_low        | 0x00000080
+a_in_range_length_errors_high             | 0x00000000
+a_in_range_length_errors_low              | 0x00000000
+a_out_of_range_length_field_high          | 0x00000000
+a_out_of_range_length_field_low           | 0x00000000
+a_frame_too_long_errors_high              | 0x00000000
+a_frame_too_long_errors_low               | 0x00000000
+a_symbol_error_during_carrier_high        | 0x00000000
+a_symbol_error_during_carrier_low         | 0x00000000
+a_mac_control_frames_transmitted_high     | 0x00000000
+a_mac_control_frames_transmitted_low      | 0x00000000
+a_mac_control_frames_received_high        | 0x00000000
+a_mac_control_frames_received_low         | 0x00000000
+a_unsupported_opcodes_received_high       | 0x00000000
+a_unsupported_opcodes_received_low        | 0x00000000
+a_pause_mac_ctrl_frames_received_high     | 0x00000000
+a_pause_mac_ctrl_frames_received_low      | 0x00000000
+a_pause_mac_ctrl_frames_transmitted_high  | 0x00000000
+a_pause_mac_ctrl_frames_transmitted_low   | 0x00000000
+=======================================================

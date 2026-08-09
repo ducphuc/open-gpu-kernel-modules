@@ -179,8 +179,29 @@ Validation of the non-coherent DMA-BUF path should include:
   and IOVA-space teardown warnings.
 
 The validated RTX 5060 Ti (GB206) GPUDirect RDMA configuration used mlx5 as
-the DMA-BUF importer and exercised the path with `ib_write_bw` and NCCL
-GDRDMA.
+the DMA-BUF importer. Plain `ib_write_bw` established the VF RDMA path, and
+NCCL GDRDMA exercised GPU memory through the DMA-BUF path.
+
+#### Current 610.57.04 evidence
+
+The current release-specific result used two RTX 5060 Ti GPUs, two
+ConnectX-6 Lx SR-IOV VFs moved into separate container network namespaces,
+RoCE v2, matching 610.57.04 kernel modules and userspace, and CUDA 13.3. NCCL
+formed a two-rank communicator, reported DMA-BUF availability and GPUDirect
+RDMA enablement for both mlx5 HCAs, used `NET/IB/0/GDRDMA` connectors, and
+completed the collective successfully.
+
+The positive result required a manually applied host `libcuda` replacement
+that exposed the required DMA-BUF capability. It does not establish support
+with stock CUDA userspace. The container run did not repeat feature-disabled
+safety or concurrent registration stress, and physical-wire calibration
+remains deferred. Because the bounded run showed workload-scale Ethernet MAC
+counter increases, it is not evidence for adapter-internal forwarding.
+
+The evidence, limitations, raw logs, and counter deltas are recorded in the
+[same-host container validation](validation/nccl-same-host-gdr-validation-2026-08-09.md).
+The reproducible workflow is described in the
+[VF-netns harness usage guide](validation/nccl-vf-netns-harness-usage-2026-08-09.md).
 
 Validation records that identify 610.43.03 provide historical hardware
 evidence only. Results obtained with 610.43.03 must be repeated with matching
